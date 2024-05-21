@@ -12,6 +12,7 @@ api = wandb.Api(timeout=29)
 
 def get_run_scores(run_id, is_dt=False):
     run = api.run(run_id)
+    print("run_id =", run_id, "run =", run)
     score_key = None
     all_scores = []
     max_dt = -1e10
@@ -41,13 +42,16 @@ def process_runs(df):
     for _, row in tqdm(
         df.iterrows(), desc="Runs scores downloading", position=0, leave=True
     ):
+        get_scores = get_run_scores(row["url"], row["algorithm"] == "DT")
+        print(f"Scores for {row['algorithm']} on {row['dataset']}:", get_scores)
         full_scores[row["algorithm"]][row["dataset"]].append(
-            get_run_scores(row["url"], row["algorithm"] == "DT")
+            get_scores            
         )
     return full_scores
 
 
 # Run if runs must be recollected
+#print("dataframe =", dataframe)
 full_scores = process_runs(dataframe)
 
 os.makedirs("bin", exist_ok=True)

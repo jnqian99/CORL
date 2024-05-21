@@ -25,6 +25,7 @@ import wandb
 from flax.core import FrozenDict
 from flax.training.train_state import TrainState
 from tqdm.auto import trange
+import pdb
 
 default_kernel_init = nn.initializers.lecun_normal()
 default_bias_init = nn.initializers.zeros
@@ -302,6 +303,17 @@ class ReplayBuffer:
                 dataset_name, buffer["rewards"]
             )
         self.data = buffer
+        #self.check_buffer()
+
+    #JQ: check whether the buffer is in correct time series        
+    def check_buffer(self):
+        print("checking buffer ...")
+        for i in range(self.data["rewards"].size-2):
+            b1 = self.data["states"][i+1] == self.data["next_states"][i]
+            b2 = self.data["actions"][i+1] == self.data["next_actions"][i]
+            if(b1.any() != True or b2.any() != True):
+                print("Time series mismatch in buffer creation i=", i)
+        print("buffer checked")
 
     @property
     def size(self) -> int:
@@ -435,10 +447,10 @@ def update_actor(
     key, random_action_key = jax.random.split(key, 2)
 
     def actor_loss_fn(params: jax.Array) -> Tuple[jax.Array, Metrics]:
-        actions = actor.apply_fn(params, batch["states"])
+        actions = actor.apply_fn(params, batch["states"]) # a = Pi(s)
 
         bc_penalty = ((actions - batch["actions"]) ** 2).sum(-1)
-        q_values = critic.apply_fn(critic.params, batch["states"], actions).min(0)
+        q_values = critic.apply_fn(critic.params, batch["states"], actions).min(0) # Q(s, a)
         lmbda = 1
         if normalize_q:
             lmbda = jax.lax.stop_gradient(1 / jax.numpy.abs(q_values).mean())
