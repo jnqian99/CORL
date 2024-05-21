@@ -19,11 +19,11 @@ noise_clip: 0.5
 normalize_q: true
 normalize_reward: false
 normalize_states: false
-num_epochs: 100
-num_updates_on_epoch: 100
+num_epochs: 10
+num_updates_on_epoch: 10
 policy_freq: 2
 policy_noise: 0.2
 project: gru_brac
 tau: 0.005
 train_seed: 0
-time_steps: 5
+time_steps: 3

@@ -367,21 +367,11 @@ class ReplayBuffer:
             key, shape=(batch_size,), minval=time_steps, maxval=self.size-1
         )
 
-        def sample_batch_func(arr):
-            print("arr.shape", arr.shape)
-            # JQ fixed the time_step to be 5
-            # TODO: make it a parameter
-            return jnp.stack([arr[indices-4], arr[indices-3], arr[indices-2], arr[indices-1], arr[indices]], axis=1)
-
-        # batch = jax.tree_map(sample_batch_func, self.data)
         batch = {}
         for key in self.data.keys():
-            #print("key", key)
             batch[key] = jnp.stack([self.data[key][indices-time_steps+i] for i in range(time_steps)], axis=1)
         #print("batch[states].shape", batch["states"].shape)            
-        return batch
-
-   
+        return batch   
 
     def get_moments(self, modality: str) -> Tuple[jax.Array, jax.Array]:
         mean = self.data[modality].mean(0)
@@ -461,6 +451,7 @@ def evaluate(
     params: jax.Array,
     action_fn: Callable,
     num_episodes: int,
+    time_steps: int,
     seed: int,
 ) -> np.ndarray:
     env.seed(seed)
@@ -476,7 +467,7 @@ def evaluate(
         total_reward = 0.0
         while not done:
             states.append(obs)
-            obs_ = jnp.stack([states[i] for i in range(max(-5, -len(states)) , 0)], axis=0)
+            obs_ = jnp.stack([states[i] for i in range(max(-time_steps, -len(states)) , 0)], axis=0)
             obs_ = obs_[None, ...]
             #print("obs_.shape", obs_.shape)
             action = np.asarray(jax.device_get(action_fn(params, obs_)))
@@ -504,6 +495,7 @@ def update_actor(
     batch: Dict[str, jax.Array],
     beta: float,
     tau: float,
+    time_steps: int,
     normalize_q: bool,
     metrics: Metrics,
 ) -> Tuple[jax.random.PRNGKey, TrainState, TrainState, Metrics]:
@@ -514,7 +506,7 @@ def update_actor(
 
         bc_penalty = ((actions - batch["actions"][:,-1,:]) ** 2).sum(-1)
 
-        actions_ = jnp.stack([batch["actions"][:, i, :] if i<4 else actions for i in range(5)], axis=1)
+        actions_ = jnp.stack([batch["actions"][:, i, :] if i<(time_steps-1) else actions for i in range(time_steps)], axis=1)
 
         q_values = critic.apply_fn(critic.params, batch["states"], actions_).min(0) # Q(s, a)
         lmbda = 1
@@ -560,6 +552,7 @@ def update_critic(
     gamma: float,
     beta: float,
     tau: float,
+    time_steps: int,
     policy_noise: float,
     noise_clip: float,
     metrics: Metrics,
@@ -576,7 +569,7 @@ def update_critic(
     #print("next_actions.shape", next_actions.shape)
     bc_penalty = ((next_actions - batch["next_actions"][:,-1,:]) ** 2).sum(-1)
 
-    next_actions_ = jnp.stack([batch["next_actions"][:, i, :] if i<4 else next_actions for i in range(5)], axis=1)
+    next_actions_ = jnp.stack([batch["next_actions"][:, i, :] if i<(time_steps-1) else next_actions for i in range(time_steps)], axis=1)
     '''
     next_actions = jnp.stack([batch["next_actions"][:,0,:],
                                 batch["next_actions"][:,1,:],
@@ -624,6 +617,7 @@ def update_td3(
     actor_bc_coef: float,
     critic_bc_coef: float,
     tau: float,
+    time_steps: int,    
     policy_noise: float,
     noise_clip: float,
     normalize_q: bool,
@@ -636,12 +630,13 @@ def update_td3(
         gamma,
         critic_bc_coef,
         tau,
+        time_steps,
         policy_noise,
         noise_clip,
         metrics,
     )
     key, new_actor, new_critic, new_metrics = update_actor(
-        key, actor, new_critic, batch, actor_bc_coef, tau, normalize_q, new_metrics
+        key, actor, new_critic, batch, actor_bc_coef, tau, time_steps, normalize_q, new_metrics
     )
     return key, new_actor, new_critic, new_metrics
 
@@ -656,6 +651,7 @@ def update_td3_no_targets(
     actor_bc_coef: float,
     critic_bc_coef: float,
     tau: float,
+    time_steps: int,
     policy_noise: float,
     noise_clip: float,
 ) -> Tuple[jax.random.PRNGKey, TrainState, TrainState, Metrics]:
@@ -667,6 +663,7 @@ def update_td3_no_targets(
         gamma,
         critic_bc_coef,
         tau,
+        time_steps,
         policy_noise,
         noise_clip,
         metrics,
@@ -743,6 +740,7 @@ def main(config: Config):
         actor_bc_coef=config.actor_bc_coef,
         critic_bc_coef=config.critic_bc_coef,
         tau=config.tau,
+        time_steps=config.time_steps,
         policy_noise=config.policy_noise,
         noise_clip=config.noise_clip,
         normalize_q=config.normalize_q,
@@ -754,6 +752,7 @@ def main(config: Config):
         actor_bc_coef=config.actor_bc_coef,
         critic_bc_coef=config.critic_bc_coef,
         tau=config.tau,
+        time_steps=config.time_steps,
         policy_noise=config.policy_noise,
         noise_clip=config.noise_clip,
     )
@@ -844,6 +843,7 @@ def main(config: Config):
                 update_carry["actor"].params,
                 actor_action_fn,
                 config.eval_episodes,
+                config.time_steps,
                 seed=config.eval_seed,
             )
             normalized_score = eval_env.get_normalized_score(eval_returns) * 100.0
