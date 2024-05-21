@@ -67,6 +67,7 @@ class Config:
     train_seed: int = 0
     eval_seed: int = 42
     time_steps: int = 5
+    offline_data_cycle: int = 0
 
     def __post_init__(self):
         self.name = f"{self.name}-{self.dataset_name}-{str(uuid.uuid4())[:8]}"
@@ -331,7 +332,7 @@ class ReplayBuffer:
                 dataset_name, buffer["rewards"]
             )
         self.data = buffer
-        #self.check_buffer()
+        # self.check_buffer()
 
     #JQ: check whether the buffer is in correct time series        
     def check_buffer(self):
@@ -341,6 +342,8 @@ class ReplayBuffer:
             b2 = self.data["actions"][i+1] == self.data["next_actions"][i]
             if(b1.any() != True or b2.any() != True):
                 print("Time series mismatch in buffer creation i=", i)
+            if self.data["dones"][i] != 0:
+                print("Episode end in buffer creation i=", i)
         print("buffer checked")
 
     @property
@@ -359,14 +362,23 @@ class ReplayBuffer:
         return batch
     '''
 
-    @partial(jax.jit, static_argnames=['batch_size', 'time_steps'])
+    @partial(jax.jit, static_argnames=['batch_size', 'time_steps', 'offline_data_cycle'])
     def sample_batch(
-        self, key: jax.random.PRNGKey, batch_size: int, time_steps: int
+        self, key: jax.random.PRNGKey, batch_size: int, time_steps: int,
+        offline_data_cycle: int
     ) -> Dict[str, jax.Array]:
+        # for k*offline_datacycle ... (k+1)*offline_data_cycle-1 is in the same time series
+        # so need to avoid any time series that contains both k*offline_data_cycle-1
+        # and k*offline_data_cycle
+        maxv=self.size
+        if offline_data_cycle > 0:
+            maxv=self.size-(self.size//offline_data_cycle)*time_steps
+        #print("maxv", maxv, "offline_data_cycle", offline_data_cycle)
         indices = jax.random.randint(
-            key, shape=(batch_size,), minval=time_steps, maxval=self.size-1
+            key, shape=(batch_size,), minval=time_steps, maxval=maxv
         )
-
+        if offline_data_cycle > 0:
+            indices = indices + (indices//offline_data_cycle)*time_steps
         batch = {}
         for key in self.data.keys():
             batch[key] = jnp.stack([self.data[key][indices-time_steps+i] for i in range(time_steps)], axis=1)
@@ -827,7 +839,8 @@ def main(config: Config):
         for i in range(config.num_updates_on_epoch):
             key, batch_key = jax.random.split(update_carry["key"])
             batch = update_carry["buffer"].sample_batch(batch_key, batch_size=config.batch_size,
-                                                        time_steps=config.time_steps)
+                                                        time_steps=config.time_steps,
+                                                        offline_data_cycle=config.offline_data_cycle)
             update_carry["key"] = key
             update_carry = td3_loop_update_step(i, update_carry, batch)
 
