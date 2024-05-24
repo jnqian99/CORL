@@ -68,6 +68,7 @@ class Config:
     eval_seed: int = 42
     time_steps: int = 5
     offline_data_cycle: int = 0
+    check_dataset: bool = False
 
     def __post_init__(self):
         self.name = f"{self.name}-{self.dataset_name}-{str(uuid.uuid4())[:8]}"
@@ -309,6 +310,7 @@ class ReplayBuffer:
         dataset_name: str,
         normalize_reward: bool = False,
         is_normalize: bool = False,
+        check_dataset: bool = False,
     ):
         d4rl_data = qlearning_dataset(gym.make(dataset_name))
         buffer = {
@@ -332,7 +334,9 @@ class ReplayBuffer:
                 dataset_name, buffer["rewards"]
             )
         self.data = buffer
-        # self.check_buffer()
+        
+        if check_dataset:
+            self.check_buffer()
 
     #JQ: check whether the buffer is in correct time series        
     def check_buffer(self):
@@ -384,6 +388,25 @@ class ReplayBuffer:
             batch[key] = jnp.stack([self.data[key][indices-time_steps+i] for i in range(time_steps)], axis=1)
         #print("batch[states].shape", batch["states"].shape)            
         return batch   
+
+    '''
+    @partial(jax.jit, static_argnames=['batch_size', 'time_steps'])
+    def sample_batch(
+        self, key: jax.random.PRNGKey, batch_size: int, time_steps: int
+    ) -> Dict[str, jax.Array]:
+        indices = jax.random.randint(
+            key, shape=(batch_size,), minval=time_steps, maxval=self.size
+        )
+        batch = {}
+        for key in self.data.keys():
+            batch = jnp.stack([self.data[key][indices-time_steps+i] for i in range(time_steps)], axis=1)
+
+        mismatch = [i for i in range(batch["rewards"].size) 
+                    if batch["states"][i+1].any() != batch["next_states"][i].any()
+                    or batch["actions"][i+1].any() != batch["next_actions"][i].any()]
+        print("mismatch", mismatch)
+        return batch
+    '''
 
     def get_moments(self, modality: str) -> Tuple[jax.Array, jax.Array]:
         mean = self.data[modality].mean(0)
@@ -707,7 +730,7 @@ def main(config: Config):
     wandb.mark_preempting()
     buffer = ReplayBuffer()
     buffer.create_from_d4rl(
-        config.dataset_name, config.normalize_reward, config.normalize_states
+        config.dataset_name, config.normalize_reward, config.normalize_states, config.check_dataset
     )
 
     key = jax.random.PRNGKey(seed=config.train_seed)

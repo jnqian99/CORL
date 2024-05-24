@@ -26,5 +26,6 @@ policy_noise: 0.2
 project: gru_brac
 tau: 0.005
 train_seed: 0
-time_steps: 3
+time_steps: 5
 offline_data_cycle: 999
+check_dataset: false
