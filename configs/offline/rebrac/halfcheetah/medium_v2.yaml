@@ -9,7 +9,7 @@ critic_ln: true
 critic_n_hiddens: 3
 dataset_name: halfcheetah-medium-v2
 eval_episodes: 10
-eval_every: 5
+eval_every: 50
 eval_seed: 42
 gamma: 0.99
 group: rebrac-halfcheetah-medium-v2
@@ -19,8 +19,8 @@ noise_clip: 0.5
 normalize_q: true
 normalize_reward: false
 normalize_states: false
-num_epochs: 100
-num_updates_on_epoch: 100
+num_epochs: 200
+num_updates_on_epoch: 200
 policy_freq: 2
 policy_noise: 0.2
 project: ReBRAC

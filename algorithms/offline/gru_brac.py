@@ -73,6 +73,9 @@ class Config:
     def __post_init__(self):
         self.name = f"{self.name}-{self.dataset_name}-{str(uuid.uuid4())[:8]}"
 
+    def dict(self):
+        dict_config = {k: v for k, v in asdict(self).items() if not isinstance(v, str) }
+
 
 def pytorch_init(fan_in: float) -> Callable:
     """
@@ -144,6 +147,7 @@ class DetActor(nn.Module):
         actions = net(state)
         return actions
         '''
+        '''
         gru_cell = nn.GRUCell(name="actor_cell")
         h = jnp.zeros((state.shape[0], self.hidden_dim))
         for timestep in range(state.shape[1]):
@@ -154,8 +158,26 @@ class DetActor(nn.Module):
         out = nn.Dense(self.action_dim,kernel_init=uniform_init(3e-3), bias_init=uniform_init(3e-3))(h)
         out = jnp.tanh(out)
         return out
-
-
+        '''
+        h = jnp.zeros((state.shape[0], self.hidden_dim))
+        for timestep in range(state.shape[1]):
+            inputs = state[:, timestep, :]
+            update_gate = nn.sigmoid(nn.Dense(self.hidden_dim, name=f'update_gate{timestep+1}',
+                                            kernel_init=pytorch_init(s_d+h_d),
+                                            bias_init=nn.initializers.constant(0.1))
+                                            (jnp.concatenate([inputs, h], axis=-1)))
+            reset_gate = nn.sigmoid(nn.Dense(self.hidden_dim, name=f'reset_gate{timestep+1}',
+                                            kernel_init=pytorch_init(s_d+h_d),
+                                            bias_init=nn.initializers.constant(0.1))
+                                            (jnp.concatenate([inputs, h], axis=-1)))
+            candidate_state = jnp.tanh(nn.Dense(self.hidden_dim, name=f'candidate_state{timestep+1}',
+                                            kernel_init=pytorch_init(s_d+h_d),
+                                            bias_init=nn.initializers.constant(0.1))
+                                            (jnp.concatenate([inputs, reset_gate * h], axis=-1)))
+            h = h * (1 - update_gate) + candidate_state * update_gate
+        out = nn.Dense(self.action_dim,kernel_init=uniform_init(3e-3), bias_init=uniform_init(3e-3))(h)
+        out = jnp.tanh(out)
+        return out
 
 class Critic(nn.Module):
     hidden_dim: int = 256
@@ -167,7 +189,6 @@ class Critic(nn.Module):
         s_d, a_d, h_d = state.shape[-1], action.shape[-1], self.hidden_dim
         # Initialization as in the EDAC paper
         # print("state.shape", state.shape, "action.shape", action.shape)
-        '''
         layers = [
             nn.Dense(
                 self.hidden_dim,
@@ -191,6 +212,10 @@ class Critic(nn.Module):
             nn.Dense(1, kernel_init=uniform_init(3e-3), bias_init=uniform_init(3e-3))
         ]
         network = nn.Sequential(layers)
+        state_action = jnp.concatenate([state, action], axis=-1)
+        out = nn.Dense(1,kernel_init=uniform_init(3e-3), bias_init=uniform_init(3e-3))(state_action[:,-1,:])
+        out = out.squeeze(-1)
+        return out
         '''
         state_action = jnp.concatenate([state, action], axis=-1)        
         #print("state_action.shape", state_action.shape)
@@ -207,6 +232,7 @@ class Critic(nn.Module):
         out = out.squeeze(-1)
         #print("out.shape", out.shape)
         return out
+        '''
 
 class EnsembleCritic(nn.Module):
     hidden_dim: int = 256
