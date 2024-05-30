@@ -1,5 +1,6 @@
 import os
 
+#os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=8'
 os.environ["TF_CUDNN_DETERMINISTIC"] = "1"  # For reproducibility
 
 from typing import TypeVar, Generic, Tuple, Union, Optional, SupportsFloat
@@ -27,7 +28,7 @@ from tqdm.auto import trange
 import random
 import pickle
 # use orbax 0.1.0
-import orbax.checkpoint
+from flax.training import checkpoints
 import shutil
 import dataclasses
 
@@ -116,12 +117,10 @@ class MyEnv(Generic[ObsType, ActType]):
         """
         self.actions.append(action)
         steps = min(len(self.states), self.time_step)
-        #print("steps", steps, "len(self.states)", len(self.states), "len(self.actions)", len(self.actions))
         states_ = jnp.stack([self.states[i] for i in range(len(self.states)-steps, len(self.states))], axis=0)
         actions_ = jnp.stack([self.actions[i] for i in range(len(self.actions)-steps, len(self.actions))], axis=0)
         states_ = states_[None, ...]
         actions_ = actions_[None, ...]
-        #print("states_.shape", states_.shape)
         next_state = self.dynamics_fn(self.dynamics_params, states_, actions_)
         state_1 = self.states[-1]
         action_1 = self.actions[-1]
@@ -129,8 +128,6 @@ class MyEnv(Generic[ObsType, ActType]):
         action_1 = action_1[None, ...]
         reward = self.rewards_fn(self.rewards_params, state_1, action_1, next_state)
         done = self.dones_fn(self.dones_params, state_1, action_1, next_state)
-        #print("next_state.shape", next_state.shape, "reward.shape", reward.shape, "done.shape", done.shape)
-        #print("next_state", next_state, "reward", reward, "done", done)
         next_state = next_state.squeeze(0)
         reward = reward.squeeze(0)
         done = done.squeeze(0)
@@ -179,59 +176,67 @@ class MyEnv(Generic[ObsType, ActType]):
             path (str): the path to the checkpoint
         """
         key = jax.random.PRNGKey(0)
-        orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-        chkdata = orbax_checkpointer.restore(chk_path)
+        chkdata = checkpoints.restore_checkpoint(ckpt_dir=chk_path,
+                            target=None,
+                            step=0)
         conf_dict = chkdata["config"]
         init_state = chkdata["init_state"]
         init_action = chkdata["init_action"]
 
-        dynamics_module = Dynamics(
+        dynamics_module_ = Dynamics(
             state_dim=init_state.shape[-1],
             action_dim=init_action.shape[-1],
             hidden_dim=conf_dict["hidden_dim"],
         )
-        dynamics = DynamicsTrainState.create(
-            apply_fn=dynamics_module.apply,
-            params=dynamics_module.init(key, init_state, init_action),
-            target_params=dynamics_module.init(key, init_state, init_action),
+        dynamics_ = DynamicsTrainState.create(
+            apply_fn=dynamics_module_.apply,
+            params=dynamics_module_.init(key, init_state, init_action),
+            target_params=dynamics_module_.init(key, init_state, init_action),
             tx=optax.adam(learning_rate=conf_dict["dynamics_learning_rate"]),
         )
-        rewards_module = Rewards(
+        rewards_module_ = Rewards(
             state_dim=init_state.shape[-1],
             action_dim=init_action.shape[-1],
             hidden_dim=conf_dict["hidden_dim"],
             layernorm=conf_dict["rewards_ln"],
             n_hiddens=conf_dict["rewards_n_hiddens"],
         )
-        rewards = RewardsTrainState.create(
-            apply_fn=rewards_module.apply,
-            params=rewards_module.init(key, init_state[:,-1,:], init_action[:,-1,:], init_state[:,-1,:]),
-            target_params=rewards_module.init(key, init_state[:,-1,:], init_action[:,-1,:], init_state[:,-1,:]),
+        rewards_ = RewardsTrainState.create(
+            apply_fn=rewards_module_.apply,
+            params=rewards_module_.init(key, init_state[:,-1,:], init_action[:,-1,:], init_state[:,-1,:]),
+            target_params=rewards_module_.init(key, init_state[:,-1,:], init_action[:,-1,:], init_state[:,-1,:]),
             tx=optax.adam(learning_rate=conf_dict["rewards_learning_rate"]),
         )
-        dones_module = Dones(
+        dones_module_ = Dones(
             state_dim=init_state.shape[-1],
             action_dim=init_action.shape[-1],
             hidden_dim=conf_dict["hidden_dim"],
             layernorm=conf_dict["dones_ln"],
             n_hiddens=conf_dict["dones_n_hiddens"],
         )
-        dones = DonesTrainState.create(
-            apply_fn=dones_module.apply,
-            params=dones_module.init(key, init_state[:,-1,:], init_action[:,-1,:], init_state[:,-1,:]),
-            target_params=dones_module.init(key, init_state[:,-1,:], init_action[:,-1,:], init_state[:,-1,:]),
+        dones_ = DonesTrainState.create(
+            apply_fn=dones_module_.apply,
+            params=dones_module_.init(key, init_state[:,-1,:], init_action[:,-1,:], init_state[:,-1,:]),
+            target_params=dones_module_.init(key, init_state[:,-1,:], init_action[:,-1,:], init_state[:,-1,:]),
             tx=optax.adam(learning_rate=conf_dict["dones_learning_rate"]),
         )
         target = {
-            "dynamics": dynamics,
-            "rewards": rewards,
-            "dones": dones,
+            "dynamics": dynamics_,
+            "rewards": rewards_,
+            "dones": dones_,
             "config": conf_dict,
             "init_state": init_state,
             "init_action": init_action,
         }
-        orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-        orbax_checkpointer.restore(chk_path, item=target)
+        chkdata = checkpoints.restore_checkpoint(ckpt_dir=chk_path,
+                            target=target,
+                            step=0)
+        dynamics = chkdata["dynamics"]
+        rewards = chkdata["rewards"]
+        dones = chkdata["dones"]
+        conf_dict = chkdata["config"]
+        init_state = chkdata["init_state"]
+        init_action = chkdata["init_action"]
         self.load(dynamics_params=dynamics.params, rewards_params=rewards.params, dones_params=dones.params,
                     dynamics_fn=dynamics.apply_fn, rewards_fn=rewards.apply_fn, dones_fn=dones.apply_fn, 
                     time_steps=conf_dict["time_steps"])
@@ -283,18 +288,24 @@ class Dynamics(nn.Module):
             inputs = jnp.concatenate([state[:, timestep, :], action[:, timestep, :]], axis=-1)
             update_gate = nn.sigmoid(nn.Dense(self.hidden_dim, name=f'update_gate{timestep+1}',
                                             kernel_init=pytorch_init(s_d+a_d+h_d),
-                                            bias_init=nn.initializers.constant(0.1))
+                                            #kernel_init=nn.initializers.constant(0.0),
+                                            bias_init=nn.initializers.constant(0.1)
+                                            )
                                             (jnp.concatenate([inputs, h], axis=-1)))
             reset_gate = nn.sigmoid(nn.Dense(self.hidden_dim, name=f'reset_gate{timestep+1}',
                                             kernel_init=pytorch_init(s_d+a_d+h_d),
-                                            bias_init=nn.initializers.constant(0.1))
+                                            bias_init=nn.initializers.constant(0.1)
+                                            )
                                             (jnp.concatenate([inputs, h], axis=-1)))
             candidate_state = jnp.tanh(nn.Dense(self.hidden_dim, name=f'candidate_state{timestep+1}',
                                             kernel_init=pytorch_init(s_d+a_d+h_d),
-                                            bias_init=nn.initializers.constant(0.1))
+                                            bias_init=nn.initializers.constant(0.1)
+                                            )
                                             (jnp.concatenate([inputs, reset_gate * h], axis=-1)))
             h = h * (1 - update_gate) + candidate_state * update_gate
-        out = nn.Dense(self.state_dim,kernel_init=uniform_init(3e-3), bias_init=uniform_init(3e-3))(h)
+        out = nn.Dense(self.state_dim,
+                       kernel_init=uniform_init(3e-3), bias_init=uniform_init(3e-3)
+                       )(h)
         #next_state = jnp.tanh(out)
         return out
     
@@ -578,12 +589,14 @@ class Metrics:
         for key, value in updates.items():
             acc, steps = new_accumulators[key]
             new_accumulators[key] = (acc + value, steps + 1)
+            #new_accumulators[key] = (value, steps + 1)
 
         return self.replace(accumulators=new_accumulators)
 
     def compute(self) -> Dict[str, np.ndarray]:
         # cumulative_value / total_steps
         return {k: np.array(v[0] / v[1]) for k, v in self.accumulators.items()}
+        #return {k: np.array(v[0]) for k, v in self.accumulators.items()}
 
 
 def normalize(
@@ -679,6 +692,7 @@ def update_dynamics(
         )
         return loss, new_metrics
 
+    #print("update_dynamics dynamics.params", dynamics.params["params"]["update_gate1"]["kernel"])
     grads, new_metrics = jax.grad(dynamics_loss_fn, has_aux=True)(dynamics.params)
     new_dynamics = dynamics.apply_gradients(grads=grads)
     '''
@@ -771,6 +785,7 @@ def main(config: Config):
         config.dataset_name, config.normalize_reward, config.normalize_states
     )
 
+    random.seed(config.train_seed)
     key = jax.random.PRNGKey(seed=config.train_seed)
     key, dynamics_key, rewards_key, dones_key = jax.random.split(key, 4)
 
@@ -781,72 +796,84 @@ def main(config: Config):
     init_state = np.zeros((1, config.time_steps, buffer.d4rl_data["states"].shape[-1]))
     init_action = np.zeros((1, config.time_steps, buffer.d4rl_data["actions"].shape[-1]))
 
-    dynamics_module = Dynamics(
+    dynamics_module_ = Dynamics(
         state_dim=init_state.shape[-1],
         action_dim=init_action.shape[-1],
         hidden_dim=config.hidden_dim,
     )
-    dynamics = DynamicsTrainState.create(
-        apply_fn=dynamics_module.apply,
-        params=dynamics_module.init(dynamics_key, init_state, init_action),
-        target_params=dynamics_module.init(dynamics_key, init_state, init_action),
+    dynamics_ = DynamicsTrainState.create(
+        apply_fn=dynamics_module_.apply,
+        params=dynamics_module_.init(dynamics_key, init_state, init_action),
+        target_params=dynamics_module_.init(dynamics_key, init_state, init_action),
         tx=optax.adam(learning_rate=config.dynamics_learning_rate),
     )
-    rewards_module = Rewards(
+    rewards_module_ = Rewards(
         state_dim=init_state.shape[-1],
         action_dim=init_action.shape[-1],
         hidden_dim=config.hidden_dim,
         layernorm=config.rewards_ln,
         n_hiddens=config.rewards_n_hiddens,
     )
-    rewards = RewardsTrainState.create(
-        apply_fn=rewards_module.apply,
-        params=rewards_module.init(rewards_key, init_state[:,-1,:], init_action[:,-1,:], init_state[:,-1,:]),
-        target_params=rewards_module.init(rewards_key, init_state[:,-1,:], init_action[:,-1,:], init_state[:,-1,:]),
+    rewards_ = RewardsTrainState.create(
+        apply_fn=rewards_module_.apply,
+        params=rewards_module_.init(rewards_key, init_state[:,-1,:], init_action[:,-1,:], init_state[:,-1,:]),
+        target_params=rewards_module_.init(rewards_key, init_state[:,-1,:], init_action[:,-1,:], init_state[:,-1,:]),
         tx=optax.adam(learning_rate=config.rewards_learning_rate),
     )
-    dones_module = Dones(
+    dones_module_ = Dones(
         state_dim=init_state.shape[-1],
         action_dim=init_action.shape[-1],
         hidden_dim=config.hidden_dim,
         layernorm=config.dones_ln,
         n_hiddens=config.dones_n_hiddens,
     )
-    dones = DonesTrainState.create(
-        apply_fn=dones_module.apply,
-        params=dones_module.init(dones_key, init_state[:,-1,:], init_action[:,-1,:], init_state[:,-1,:]),
-        target_params=dones_module.init(dones_key, init_state[:,-1,:], init_action[:,-1,:], init_state[:,-1,:]),
+    dones_ = DonesTrainState.create(
+        apply_fn=dones_module_.apply,
+        params=dones_module_.init(dones_key, init_state[:,-1,:], init_action[:,-1,:], init_state[:,-1,:]),
+        target_params=dones_module_.init(dones_key, init_state[:,-1,:], init_action[:,-1,:], init_state[:,-1,:]),
         tx=optax.adam(learning_rate=config.dones_learning_rate),
     )
 
     config_dict = config.dict()
     if config.reload_chkpt and os.path.exists(config.chkpt_dir):
         target = {
-            "dynamics": dynamics,
-            "rewards": rewards,
-            "dones": dones,
+            "dynamics": dynamics_,
+            "rewards": rewards_,
+            "dones": dones_,
             "config": config_dict,
             "init_state": init_state,
             "init_action": init_action,
         }
-        orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-        chkdata = orbax_checkpointer.restore(config.chkpt_dir, item=target)
+        chkdata = checkpoints.restore_checkpoint(ckpt_dir=config.chkpt_dir,
+                            target=target,
+                            step=0)        
+        dynamics = DynamicsTrainState.create(
+            apply_fn=dynamics_module_.apply,
+            params=chkdata["dynamics"].params,
+            target_params=dynamics_module_.init(dynamics_key, init_state, init_action),
+            tx=optax.adam(learning_rate=config.dynamics_learning_rate),
+        )
+        #print("restored dynamics.params", dynamics.params["params"]["update_gate1"]["kernel"])
+        rewards = chkdata["rewards"]
+        dones = chkdata["dones"]
+        config_dict = chkdata["config"]
+        init_state = chkdata["init_state"]
+        init_action = chkdata["init_action"]
         print("Successfully loaded checkpoint from", config.chkpt_dir)
+    else:
+        dynamics = dynamics_
+        rewards = rewards_
+        dones = dones_
 
+    #print("after restore dynamics.params", dynamics.params["params"]["update_gate1"]["kernel"])
+
+    #print("after restore chkdata", chkdata["dynamics"].params["params"]["update_gate1"]["kernel"])
     # metrics
     bc_metrics_to_log = [
         "dynamics_loss",
         "rewards_loss",
         "dones_loss",
     ]
-    # shared carry for update loops
-    update_carry = {
-        "key": key,
-        "dynamics": dynamics,
-        "rewards": rewards,
-        "dones": dones,
-        "buffer": buffer,
-    }
 
     @jax.jit
     def dynamics_fn(params: jax.Array, obs: jax.Array, act: jax.Array):
@@ -892,6 +919,14 @@ def main(config: Config):
     myenv.load(dynamics_params=dynamics.params, rewards_params=rewards.params, dones_params=dones.params,
                 dynamics_fn=dynamics_fn, rewards_fn=rewards_fn, dones_fn=dones_fn, time_steps=config.time_steps)
 
+    # shared carry for update loops
+    update_carry = {
+        "key": key,
+        "dynamics": dynamics,
+        "rewards": rewards,
+        "dones": dones,
+        "buffer": buffer,
+    }
     for epoch in trange(config.num_epochs, desc="myenv_gru Epochs"):
         # metrics for accumulation during epoch and logging to wandb
         # we need to reset them every epoch
@@ -917,7 +952,7 @@ def main(config: Config):
         wandb.log(
             {"epoch": epoch, **{f"myenv_gru/{k}": v for k, v in mean_metrics.items()}}
         )
-
+        '''
         if epoch % config.eval_every == 0 or epoch == config.num_epochs - 1:
             dynamics_loss, rewards_loss, dones_loss, key = evaluate_offline(
                 myenv,
@@ -938,20 +973,26 @@ def main(config: Config):
                     "eval/dones_loss_std": np.std(dones_loss),
                 }
             )
+        '''
 
     # save to checkpoint
     shutil.rmtree(config.chkpt_dir, ignore_errors=True)
     ckpt = {
-        "dynamics": dynamics,
-        "rewards": rewards,
-        "dones": dones,
+        "dynamics": update_carry["dynamics"],
+        "rewards": update_carry["rewards"],
+        "dones": update_carry["dones"],
         "config": config_dict,
         "init_state": init_state,
         "init_action": init_action,
     }
-    orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-    orbax_checkpointer.save(config.chkpt_dir, ckpt, force=True)
+    #print("saved params", ckpt["dynamics"].params["params"]["update_gate1"]["kernel"]) # is OK
+    checkpoints.save_checkpoint(ckpt_dir=config.chkpt_dir,
+                            target=ckpt,
+                            step=0,
+                            overwrite=True,
+                            keep=2)
     print("Successfully saved checkpoint to", config.chkpt_dir)
+
 
 if __name__ == "__main__":
     main()

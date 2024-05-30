@@ -2,7 +2,7 @@ from myenv_gru import MyEnv
 import random
 import numpy as np
 
-chkpt_dir = '/tmp/chkpt/myenv_gru/halfcheetah/medium_v2'
+chkpt_dir = '/home/james/chkpt/myenv_gru/halfcheetah/medium_v2'
 
 def main():
     env = MyEnv()

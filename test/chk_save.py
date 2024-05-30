@@ -12,14 +12,8 @@ import flax
 from flax import linen as nn
 from flax.training import checkpoints, train_state
 from flax import struct, serialization
-import orbax.checkpoint
 
 import optax
-
-ckpt_dir = '/tmp/flax_ckpt'
-
-if os.path.exists(ckpt_dir):
-    shutil.rmtree(ckpt_dir)  # Remove any existing checkpoints from the last notebook run.
 
 # A simple model with one linear layer.
 key = random.PRNGKey(0)
@@ -46,8 +40,11 @@ ckpt = {'model': state, 'config': config, 'data': [x1]}
 
 print(ckpt)
 
-shutil.rmtree('/tmp/chkpt/myenv_gru/halfcheetah/medium_v2')
-orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-orbax_checkpointer.save('/tmp/chkpt/myenv_gru/halfcheetah/medium_v2', ckpt)
+ckpt_dir = '/home/james/chkpt/test_save'
 
+checkpoints.save_checkpoint(ckpt_dir=ckpt_dir,
+                            target=ckpt,
+                            step=0,
+                            overwrite=True,
+                            keep=2)
 
