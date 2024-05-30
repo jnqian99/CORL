@@ -8,11 +8,11 @@ def main():
     env = MyEnv()
     env.load_from_checkpoint(chkpt_dir)
     # create a random float array of size 17
-    obs = np.random.rand(env.init_state.shape[-1])
+    obs = np.random.rand(env.get_state_size())
     env.reset(obs)
     print("init obs:", obs)
     for i in range(10):
-        action = np.random.rand(env.init_action.shape[-1])
+        action = np.random.rand(env.get_action_size())
         obs, reward, bdone, _ = env.step(action)
         print("step:", i+1)
         print("action:", action)

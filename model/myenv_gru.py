@@ -238,6 +238,12 @@ class MyEnv(Generic[ObsType, ActType]):
         self.init_state = init_state
         self.init_action = init_action
 
+    def get_state_size(self) -> int:
+        return self.init_state.shape[-1]
+    
+    def get_action_size(self) -> int:
+        return self.init_action.shape[-1]
+
 
 def pytorch_init(fan_in: float) -> Callable:
     """
@@ -260,7 +266,6 @@ def uniform_init(bound: float) -> Callable:
         )
 
     return _init
-
 
 def identity(x: Any) -> Any:
     return x
@@ -825,7 +830,8 @@ def main(config: Config):
             "init_action": init_action,
         }
         orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-        orbax_checkpointer.restore(config.chkpt_dir, item=target)
+        chkdata = orbax_checkpointer.restore(config.chkpt_dir, item=target)
+        print("Successfully loaded checkpoint from", config.chkpt_dir)
 
     # metrics
     bc_metrics_to_log = [

@@ -8,7 +8,7 @@ dones_learning_rate: 0.1
 dones_cutoff: 0.6
 dataset_name: halfcheetah-medium-v2
 eval_episodes: 5
-eval_every: 20
+eval_every: 100
 eval_seed: 42
 eval_steps: 30
 tau: 0.005
@@ -19,8 +19,8 @@ name: myenv_gru
 noise_clip: 0.5
 normalize_reward: false
 normalize_states: false
-num_epochs: 40
-num_updates_on_epoch: 40
+num_epochs: 800
+num_updates_on_epoch: 800
 project: myenv_gru
 train_seed: 0
 time_steps: 5
