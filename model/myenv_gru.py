@@ -122,12 +122,8 @@ class MyEnv(Generic[ObsType, ActType]):
         states_ = states_[None, ...]
         actions_ = actions_[None, ...]
         next_state = self.dynamics_fn(self.dynamics_params, states_, actions_)
-        state_1 = self.states[-1]
-        action_1 = self.actions[-1]
-        state_1 = state_1[None, ...]
-        action_1 = action_1[None, ...]
-        reward = self.rewards_fn(self.rewards_params, state_1, action_1, next_state)
-        done = self.dones_fn(self.dones_params, state_1, action_1, next_state)
+        reward = self.rewards_fn(self.rewards_params, states_, actions_)
+        done = self.dones_fn(self.dones_params, states_, actions_)
         next_state = next_state.squeeze(0)
         reward = reward.squeeze(0)
         done = done.squeeze(0)
@@ -203,8 +199,8 @@ class MyEnv(Generic[ObsType, ActType]):
         )
         rewards_ = RewardsTrainState.create(
             apply_fn=rewards_module_.apply,
-            params=rewards_module_.init(key, init_state[:,-1,:], init_action[:,-1,:], init_state[:,-1,:]),
-            target_params=rewards_module_.init(key, init_state[:,-1,:], init_action[:,-1,:], init_state[:,-1,:]),
+            params=rewards_module_.init(key, init_state, init_action),
+            target_params=rewards_module_.init(key, init_state, init_action),
             tx=optax.adam(learning_rate=conf_dict["rewards_learning_rate"]),
         )
         dones_module_ = Dones(
@@ -216,8 +212,8 @@ class MyEnv(Generic[ObsType, ActType]):
         )
         dones_ = DonesTrainState.create(
             apply_fn=dones_module_.apply,
-            params=dones_module_.init(key, init_state[:,-1,:], init_action[:,-1,:], init_state[:,-1,:]),
-            target_params=dones_module_.init(key, init_state[:,-1,:], init_action[:,-1,:], init_state[:,-1,:]),
+            params=dones_module_.init(key, init_state, init_action),
+            target_params=dones_module_.init(key, init_state, init_action),
             tx=optax.adam(learning_rate=conf_dict["dones_learning_rate"]),
         )
         target = {
@@ -317,37 +313,33 @@ class Rewards(nn.Module):
     n_hiddens: int = 3
 
     @nn.compact
-    def __call__(self, state: jax.Array, action: jax.Array, next_state: jax.Array) -> jax.Array:
-        s_d, a_d, ns_d, h_d = self.state_dim, self.action_dim, self.state_dim, self.hidden_dim
-        # Initialization as in the EDAC paper
-        # print("state.shape", state.shape, "action.shape", action.shape)
-        layers = [
-            nn.Dense(
-                self.hidden_dim,
-                kernel_init=pytorch_init(s_d + a_d + ns_d),
-                bias_init=nn.initializers.constant(0.1),
-            ),
-            nn.relu,
-            nn.LayerNorm() if self.layernorm else identity,
-        ]
-        for _ in range(self.n_hiddens - 1):
-            layers += [
-                nn.Dense(
-                    self.hidden_dim,
-                    kernel_init=pytorch_init(h_d),
-                    bias_init=nn.initializers.constant(0.1),
-                ),
-                nn.relu,
-                nn.LayerNorm() if self.layernorm else identity,
-            ]
-        layers += [
-            nn.Dense(1, kernel_init=uniform_init(3e-3), bias_init=uniform_init(3e-3)),
-        ]
-        network = nn.Sequential(layers)
-        state_action = jnp.concatenate([state, action, next_state], axis=-1)
-        out = network(state_action)
-        rewards = out.squeeze(-1)
-        return rewards
+    def __call__(self, state: jax.Array, action: jax.Array) -> jax.Array:
+        s_d, a_d, h_d = self.state_dim, self.action_dim, self.hidden_dim
+        h = jnp.zeros((state.shape[0], self.hidden_dim))
+        for timestep in range(state.shape[1]):
+            inputs = jnp.concatenate([state[:, timestep, :], action[:, timestep, :]], axis=-1)
+            update_gate = nn.sigmoid(nn.Dense(self.hidden_dim, name=f'update_gate{timestep+1}',
+                                            kernel_init=pytorch_init(s_d+a_d+h_d),
+                                            #kernel_init=nn.initializers.constant(0.0),
+                                            bias_init=nn.initializers.constant(0.1)
+                                            )
+                                            (jnp.concatenate([inputs, h], axis=-1)))
+            reset_gate = nn.sigmoid(nn.Dense(self.hidden_dim, name=f'reset_gate{timestep+1}',
+                                            kernel_init=pytorch_init(s_d+a_d+h_d),
+                                            bias_init=nn.initializers.constant(0.1)
+                                            )
+                                            (jnp.concatenate([inputs, h], axis=-1)))
+            candidate_state = jnp.tanh(nn.Dense(self.hidden_dim, name=f'candidate_state{timestep+1}',
+                                            kernel_init=pytorch_init(s_d+a_d+h_d),
+                                            bias_init=nn.initializers.constant(0.1)
+                                            )
+                                            (jnp.concatenate([inputs, reset_gate * h], axis=-1)))
+            h = h * (1 - update_gate) + candidate_state * update_gate
+        out = nn.Dense(1,
+                       kernel_init=uniform_init(3e-3), bias_init=uniform_init(3e-3)
+                       )(h)
+        #next_state = jnp.tanh(out)
+        return out.squeeze(-1)
 
 class Dones(nn.Module):
     state_dim: int
@@ -357,38 +349,33 @@ class Dones(nn.Module):
     n_hiddens: int = 3
 
     @nn.compact
-    def __call__(self, state: jax.Array, action: jax.Array, next_state: jax.Array) -> jax.Array:
-        s_d, a_d, ns_d, h_d = self.state_dim, self.action_dim, self.state_dim, self.hidden_dim
-        # Initialization as in the EDAC paper
-        # print("state.shape", state.shape, "action.shape", action.shape)
-        layers = [
-            nn.Dense(
-                self.hidden_dim,
-                kernel_init=pytorch_init(s_d + a_d + ns_d),
-                bias_init=nn.initializers.constant(0.1),
-            ),
-            nn.relu,
-            nn.LayerNorm() if self.layernorm else identity,
-        ]
-        for _ in range(self.n_hiddens - 1):
-            layers += [
-                nn.Dense(
-                    self.hidden_dim,
-                    kernel_init=pytorch_init(h_d),
-                    bias_init=nn.initializers.constant(0.1),
-                ),
-                nn.relu,
-                nn.LayerNorm() if self.layernorm else identity,
-            ]
-        layers += [
-            nn.Dense(1, kernel_init=uniform_init(3e-3), bias_init=uniform_init(3e-3)),
-            nn.sigmoid
-        ]
-        network = nn.Sequential(layers)
-        state_action = jnp.concatenate([state, action, next_state], axis=-1)
-        out = network(state_action)
-        dones = out.squeeze(-1)
-        return dones
+    def __call__(self, state: jax.Array, action: jax.Array) -> jax.Array:
+        s_d, a_d, h_d = self.state_dim, self.action_dim, self.hidden_dim
+        h = jnp.zeros((state.shape[0], self.hidden_dim))
+        for timestep in range(state.shape[1]):
+            inputs = jnp.concatenate([state[:, timestep, :], action[:, timestep, :]], axis=-1)
+            update_gate = nn.sigmoid(nn.Dense(self.hidden_dim, name=f'update_gate{timestep+1}',
+                                            kernel_init=pytorch_init(s_d+a_d+h_d),
+                                            #kernel_init=nn.initializers.constant(0.0),
+                                            bias_init=nn.initializers.constant(0.1)
+                                            )
+                                            (jnp.concatenate([inputs, h], axis=-1)))
+            reset_gate = nn.sigmoid(nn.Dense(self.hidden_dim, name=f'reset_gate{timestep+1}',
+                                            kernel_init=pytorch_init(s_d+a_d+h_d),
+                                            bias_init=nn.initializers.constant(0.1)
+                                            )
+                                            (jnp.concatenate([inputs, h], axis=-1)))
+            candidate_state = jnp.tanh(nn.Dense(self.hidden_dim, name=f'candidate_state{timestep+1}',
+                                            kernel_init=pytorch_init(s_d+a_d+h_d),
+                                            bias_init=nn.initializers.constant(0.1)
+                                            )
+                                            (jnp.concatenate([inputs, reset_gate * h], axis=-1)))
+            h = h * (1 - update_gate) + candidate_state * update_gate
+        out = nn.Dense(1,
+                       kernel_init=uniform_init(3e-3), bias_init=uniform_init(3e-3)
+                       )(h)
+        #next_state = jnp.tanh(out)
+        return out.squeeze(-1)
         
 def qlearning_dataset(
     env: gym.Env,
@@ -712,7 +699,7 @@ def update_rewards(
     key, random_state_key = jax.random.split(key, 2)
 
     def rewards_loss_fn(params: jax.Array) -> Tuple[jax.Array, Metrics]:
-        rewards_pred = rewards.apply_fn(params, batch["states"][:,-1,:], batch["actions"][:,-1,:], batch["next_states"][:,-1,:])
+        rewards_pred = rewards.apply_fn(params, batch["states"], batch["actions"])
 
         penalty = ((rewards_pred - batch["rewards"][:,-1]) ** 2)
 
@@ -744,7 +731,7 @@ def update_dones(
     key, random_state_key = jax.random.split(key, 2)
 
     def dones_loss_fn(params: jax.Array) -> Tuple[jax.Array, Metrics]:
-        dones_pred = dones.apply_fn(params, batch["states"][:,-1,:], batch["actions"][:,-1,:], batch["next_states"][:,-1,:])
+        dones_pred = dones.apply_fn(params, batch["states"], batch["actions"])
 
         penalty = ((dones_pred - batch["dones"][:,-1]) ** 2)
 
@@ -816,8 +803,8 @@ def main(config: Config):
     )
     rewards_ = RewardsTrainState.create(
         apply_fn=rewards_module_.apply,
-        params=rewards_module_.init(rewards_key, init_state[:,-1,:], init_action[:,-1,:], init_state[:,-1,:]),
-        target_params=rewards_module_.init(rewards_key, init_state[:,-1,:], init_action[:,-1,:], init_state[:,-1,:]),
+        params=rewards_module_.init(rewards_key, init_state, init_action),
+        target_params=rewards_module_.init(rewards_key, init_state, init_action),
         tx=optax.adam(learning_rate=config.rewards_learning_rate),
     )
     dones_module_ = Dones(
@@ -829,8 +816,8 @@ def main(config: Config):
     )
     dones_ = DonesTrainState.create(
         apply_fn=dones_module_.apply,
-        params=dones_module_.init(dones_key, init_state[:,-1,:], init_action[:,-1,:], init_state[:,-1,:]),
-        target_params=dones_module_.init(dones_key, init_state[:,-1,:], init_action[:,-1,:], init_state[:,-1,:]),
+        params=dones_module_.init(dones_key, init_state, init_action),
+        target_params=dones_module_.init(dones_key, init_state, init_action),
         tx=optax.adam(learning_rate=config.dones_learning_rate),
     )
 

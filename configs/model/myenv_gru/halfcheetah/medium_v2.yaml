@@ -19,8 +19,8 @@ name: myenv_gru
 noise_clip: 0.5
 normalize_reward: false
 normalize_states: false
-num_epochs: 200
-num_updates_on_epoch: 200
+num_epochs: 800
+num_updates_on_epoch: 800
 project: myenv_gru
 train_seed: 0
 time_steps: 5
